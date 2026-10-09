@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Вишлист Виктории</title>
+<title>Вишлист</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=Unbounded:wght@500;600&display=swap">
@@ -163,15 +163,19 @@ input[type="file"] { display: none; }
   </header>
 
   <div class="banner" id="viewBanner" hidden>
-    <p><b>Вы смотрите чужой список.</b> Здесь его нельзя менять, и фото в ссылке не передаются.</p>
+    <p><b>Вы смотрите чужой список.</b> Здесь его нельзя менять.</p>
     <a class="btn" id="ownLink" href="#">Открыть свой список</a>
   </div>
 
   <section class="panel" id="sharePanel" hidden>
     <h2>Поделиться списком</h2>
     <div class="share-block">
-      <p><b>Ссылка для просмотра.</b> Название, цена и ссылка на товар, без фото. Отправьте её в мессенджере.</p>
-      <div class="row-actions"><button type="button" id="mkLink">Создать ссылку</button></div>
+      <p><b>Ссылка для просмотра.</b> Человек открывает её и видит список, менять его он не может.</p>
+      <div class="row-actions">
+        <button type="button" id="mkLink">Ссылка с фото</button>
+        <button type="button" id="mkShort">Короткая, без фото</button>
+      </div>
+      <p id="linkHint" hidden></p>
       <textarea id="linkOut" readonly hidden aria-label="Ссылка для просмотра"></textarea>
       <div class="row-actions" id="linkActions" hidden><button type="button" class="primary" id="copyLink">Скопировать</button></div>
       <p class="err" id="shareErr" role="alert"></p>
@@ -462,20 +466,50 @@ input[type="file"] { display: none; }
     if (!p.hidden) p.scrollIntoView({ behavior: "smooth", block: "start" });
   });
   $("#shareClose").addEventListener("click", function () { $("#sharePanel").hidden = true; });
-  $("#mkLink").addEventListener("click", async function () {
-    var err = $("#shareErr"); err.textContent = "";
+  function thumb(dataUrl) {
+    return new Promise(function (resolve) {
+      if (!dataUrl) return resolve("");
+      var img = new Image();
+      img.onload = function () {
+        var k = Math.min(1, 176 / Math.max(img.width, img.height));
+        var w = Math.max(1, Math.round(img.width * k)), h = Math.max(1, Math.round(img.height * k));
+        var c = document.createElement("canvas"); c.width = w; c.height = h;
+        var x = c.getContext("2d"); x.fillStyle = "#fff"; x.fillRect(0, 0, w, h); x.drawImage(img, 0, 0, w, h);
+        resolve(c.toDataURL("image/jpeg", 0.55).slice(23));
+      };
+      img.onerror = function () { resolve(""); };
+      img.src = dataUrl;
+    });
+  }
+  async function makeLink(withPhotos) {
+    var err = $("#shareErr"), hint = $("#linkHint"); err.textContent = ""; hint.hidden = true;
     if (!state.items.length) { err.textContent = "Сначала добавьте хотя бы одну позицию."; return; }
     if (!/^https?:$/.test(location.protocol)) {
       err.textContent = "Эта страница открыта как файл, и ссылка на неё не откроется у другого человека. Сначала разместите страницу на сайте.";
       return;
     }
+    var btns = [$("#mkLink"), $("#mkShort")]; btns.forEach(function (b) { b.disabled = true; });
     try {
-      var payload = { v: 1, i: state.items.map(function (x) { return { n: x.name, p: x.price, l: x.link, g: x.got ? 1 : 0 }; }) };
-      var url = location.href.split("#")[0] + "#v=" + await pack(payload);
+      var rows = [];
+      for (var k = 0; k < state.items.length; k++) {
+        var x = state.items[k], row = { n: x.name, p: x.price, l: x.link, g: x.got ? 1 : 0 };
+        if (withPhotos && x.photo) { var t = await thumb(x.photo); if (t) row.t = t; }
+        rows.push(row);
+      }
+      var url = location.href.split("#")[0] + "#v=" + await pack({ v: 1, i: rows });
       var out = $("#linkOut"); out.value = url; out.hidden = false; $("#linkActions").hidden = false;
-      if (url.length > 3500) err.textContent = "Ссылка получилась длинной (" + url.length + " символов), мессенджер может её обрезать. Для такого списка лучше отправить копию файлом.";
+      hint.hidden = false;
+      if (withPhotos) {
+        hint.textContent = "Длина ссылки: " + url.length + " символов. Такую ссылку принимают iMessage, WhatsApp и почта. Telegram и ВК режут длинные сообщения, туда отправьте копию файлом.";
+      } else {
+        hint.textContent = "Длина ссылки: " + url.length + " символов. Её можно отправить в любом мессенджере.";
+      }
+      if (url.length > 120000) err.textContent = "Ссылка получилась очень длинной, она может не открыться. Отправьте копию файлом.";
     } catch (e) { err.textContent = "Не получилось создать ссылку."; }
-  });
+    btns.forEach(function (b) { b.disabled = false; });
+  }
+  $("#mkLink").addEventListener("click", function () { makeLink(true); });
+  $("#mkShort").addEventListener("click", function () { makeLink(false); });
   $("#copyLink").addEventListener("click", function () {
     var out = $("#linkOut");
     function fallback() { out.focus(); out.select(); toast("Выделено, нажмите «Копировать» в меню"); }
@@ -520,7 +554,8 @@ input[type="file"] { display: none; }
     unpack(m[1]).then(function (d) {
       var arr = d && Array.isArray(d.i) ? d.i : [];
       state.items = arr.slice(0, 200).map(function (x, k) {
-        return clean({ id: "v" + k, name: x && x.n, price: x && x.p, link: x && x.l, got: x && x.g, createdAt: 1e12 - k });
+        var ph = x && typeof x.t === "string" && /^[A-Za-z0-9+\/=]+$/.test(x.t) ? "data:image/jpeg;base64," + x.t : "";
+        return clean({ id: "v" + k, name: x && x.n, price: x && x.p, link: x && x.l, photo: ph, got: x && x.g, createdAt: 1e12 - k });
       }).filter(Boolean);
       render();
     }).catch(function () { toast("Ссылка повреждена или обрезана. Попросите отправить её ещё раз."); });
